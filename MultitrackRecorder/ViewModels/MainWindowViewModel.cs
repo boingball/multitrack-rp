@@ -1,14 +1,18 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
 using System.Windows;
 using MultitrackRecorder.Models;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace MultitrackRecorder.ViewModels;
 
-public sealed class MainWindowViewModel : ViewModelBase
+public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 {
+    private readonly Dictionary<TrackViewModel, TrackPlaybackState> _playbackStates = new();
     private bool _isRecordingToTape;
+    private bool _disposed;
 
     public ObservableCollection<TrackViewModel> Tracks { get; } = new();
 
@@ -21,14 +25,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         for (var i = 0; i < 8; i++)
         {
             var track = new TrackViewModel(i);
-            track.PropertyChanged += (_, args) =>
-            {
-                if (args.PropertyName == nameof(TrackViewModel.RecordEnabled))
-                {
-                    UpdateRecordingState();
-                }
-            };
-
+            track.PropertyChanged += TrackOnPropertyChanged;
             Tracks.Add(track);
         }
 
@@ -54,6 +51,96 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string RecordingTapeStatus => IsRecordingToTape
         ? "● Recording mixdown tape (all armed inputs)"
         : "○ Mixdown tape idle";
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        foreach (var state in _playbackStates.Values)
+        {
+            state.Dispose();
+        }
+
+        _playbackStates.Clear();
+        _disposed = true;
+    }
+
+    private void TrackOnPropertyChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (sender is not TrackViewModel track)
+        {
+            return;
+        }
+
+        if (args.PropertyName == nameof(TrackViewModel.RecordEnabled))
+        {
+            UpdateRecordingState();
+            return;
+        }
+
+        if (args.PropertyName == nameof(TrackViewModel.PlayEnabled) ||
+            args.PropertyName == nameof(TrackViewModel.SelectedOutput) ||
+            args.PropertyName == nameof(TrackViewModel.TapeFilePath))
+        {
+            RefreshPlayback(track);
+            return;
+        }
+
+        if (args.PropertyName == nameof(TrackViewModel.Volume) ||
+            args.PropertyName == nameof(TrackViewModel.Mute))
+        {
+            if (_playbackStates.TryGetValue(track, out var state))
+            {
+                state.VolumeProvider.Volume = track.Mute ? 0f : track.Volume;
+            }
+        }
+    }
+
+    private void RefreshPlayback(TrackViewModel track)
+    {
+        StopPlayback(track);
+
+        if (!track.PlayEnabled || string.IsNullOrWhiteSpace(track.TapeFilePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var reader = new AudioFileReader(track.TapeFilePath);
+            var volumeProvider = new VolumeSampleProvider(reader)
+            {
+                Volume = track.Mute ? 0f : track.Volume
+            };
+
+            var output = new WaveOutEvent
+            {
+                DeviceNumber = track.SelectedOutput?.Id ?? -1
+            };
+
+            output.Init(volumeProvider);
+            output.Play();
+            _playbackStates[track] = new TrackPlaybackState(reader, output, volumeProvider);
+        }
+        catch (Exception ex)
+        {
+            track.PlayEnabled = false;
+            MessageBox.Show($"Unable to play {track.Name}: {ex.Message}", "Playback Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void StopPlayback(TrackViewModel track)
+    {
+        if (!_playbackStates.Remove(track, out var state))
+        {
+            return;
+        }
+
+        state.Dispose();
+    }
 
     private void SetAll(Action<TrackViewModel> update)
     {
@@ -97,5 +184,19 @@ public sealed class MainWindowViewModel : ViewModelBase
     private void UpdateRecordingState()
     {
         IsRecordingToTape = Tracks.Any(track => track.RecordEnabled);
+    }
+
+    private sealed class TrackPlaybackState(AudioFileReader reader, WaveOutEvent output, VolumeSampleProvider volumeProvider) : IDisposable
+    {
+        public AudioFileReader Reader { get; } = reader;
+        public WaveOutEvent Output { get; } = output;
+        public VolumeSampleProvider VolumeProvider { get; } = volumeProvider;
+
+        public void Dispose()
+        {
+            Output.Stop();
+            Output.Dispose();
+            Reader.Dispose();
+        }
     }
 }

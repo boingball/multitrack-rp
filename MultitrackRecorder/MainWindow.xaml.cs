@@ -11,6 +11,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DataContext = new MainWindowViewModel();
+        Closed += (_, _) => (DataContext as MainWindowViewModel)?.Dispose();
     }
 
     private void ChannelMode_Checked(object sender, RoutedEventArgs e)
