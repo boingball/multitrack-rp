@@ -8,6 +8,8 @@ namespace MultitrackRecorder.ViewModels;
 
 public sealed class MainWindowViewModel : ViewModelBase
 {
+    private bool _isRecordingToTape;
+
     public ObservableCollection<TrackViewModel> Tracks { get; } = new();
 
     public RelayCommand PlayAllCommand { get; }
@@ -18,7 +20,16 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         for (var i = 0; i < 8; i++)
         {
-            Tracks.Add(new TrackViewModel(i));
+            var track = new TrackViewModel(i);
+            track.PropertyChanged += (_, args) =>
+            {
+                if (args.PropertyName == nameof(TrackViewModel.RecordEnabled))
+                {
+                    UpdateRecordingState();
+                }
+            };
+
+            Tracks.Add(track);
         }
 
         LoadDevices();
@@ -26,7 +37,23 @@ public sealed class MainWindowViewModel : ViewModelBase
         PlayAllCommand = new RelayCommand(() => SetAll(track => track.PlayEnabled = !track.PlayEnabled));
         RecordAllCommand = new RelayCommand(() => SetAll(track => track.RecordEnabled = !track.RecordEnabled));
         MuteAllCommand = new RelayCommand(() => SetAll(track => track.Mute = !track.Mute));
+        UpdateRecordingState();
     }
+
+    public bool IsRecordingToTape
+    {
+        get => _isRecordingToTape;
+        private set
+        {
+            _isRecordingToTape = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(RecordingTapeStatus));
+        }
+    }
+
+    public string RecordingTapeStatus => IsRecordingToTape
+        ? "● Recording mixdown tape (all armed inputs)"
+        : "○ Mixdown tape idle";
 
     private void SetAll(Action<TrackViewModel> update)
     {
@@ -65,5 +92,10 @@ public sealed class MainWindowViewModel : ViewModelBase
         {
             MessageBox.Show("No audio devices found. Connect an audio interface and restart.", "Audio Devices", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private void UpdateRecordingState()
+    {
+        IsRecordingToTape = Tracks.Any(track => track.RecordEnabled);
     }
 }
